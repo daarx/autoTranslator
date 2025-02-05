@@ -68,6 +68,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "soloud",
  "tokio",
 ]
 
@@ -583,6 +584,15 @@ dependencies = [
  "glob",
  "libc",
  "libloading",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e24a03c8b52922d68a1589ad61032f2c1aa5a8158d2aa0d93c6e9534944bbad6"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -2496,6 +2506,26 @@ checksum = "c970269d99b64e60ec3bd6ad27270092a5394c4e309314b18ae3fe575695fbe8"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "soloud"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40cbdc64b205d53f861657923d4f94bd56ffa81e11b8ad920ac79447ececb47"
+dependencies = [
+ "bitflags 2.8.0",
+ "paste",
+ "soloud-sys",
+]
+
+[[package]]
+name = "soloud-sys"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f02ffc83bc0ae8897f7a13e975bde2126d7a9a9aa82d73d129ac8e60461f7b41"
+dependencies = [
+ "cmake",
 ]
 
 [[package]]

@@ -13,3 +13,4 @@ dotenv = "0.15"
 reqwest = { version = "0.12", features = ["multipart", "json", "stream"] }
 serde = "1.0"
 serde_json = "1.0"
+soloud = "1.0.5"

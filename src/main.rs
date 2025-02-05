@@ -12,6 +12,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::multipart;
 use std::io::{Read, Write};
 use std::vec;
+use soloud::{AudioExt, LoadExt, audio, Soloud};
 use tokio;
 
 const AZURE_OCR_URL: &str = "AZURE_OCR_URL";
@@ -22,17 +23,26 @@ const USE_AWS_TEXT_TO_SPEECH: &str = "USE_AWS_TEXT_TO_SPEECH";
 
 #[tokio::main]
 async fn main() {
-    dotenv::dotenv().ok(); // Load AWS credentials from file into environment variables
+    dotenv::dotenv().ok(); // Load AWS and Azure credentials from file into environment variables
 
     match capture_image_from_webcam() {
         Ok(image_buffer) => match extract_text_from_image(image_buffer).await {
             Ok(extracted_text) => {
-                println!("Extracted text from image: {}", extracted_text);
-
                 let text_to_speech_result = if dotenv::var(USE_AWS_TEXT_TO_SPEECH).unwrap().trim().parse().unwrap() { convert_text_to_speech_with_aws(extracted_text).await } else { convert_text_to_speech_with_azure(extracted_text).await };
 
                 match text_to_speech_result {
-                    Ok(()) => println!("Successfully converted text"),
+                    Ok(()) => {
+                        let sl = Soloud::default().unwrap();
+                        let mut wav = audio::Wav::default();
+                        let mut file = File::open("output_audio.mp3").unwrap();
+                        let mut file_vector = Vec::new();
+                        file.read_to_end(&mut file_vector).unwrap();
+                        wav.load_mem(file_vector.as_slice()).unwrap();
+                        sl.play(&wav);
+                        while sl.voice_count() > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    },
                     Err(e) => eprintln!("Failed to convert text: {}", e),
                 }
             }
@@ -62,9 +72,9 @@ fn capture_image_from_webcam() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let decoded = frame.decode_image::<RgbFormat>()?;
     println!("Decoded Frame of {}", decoded.len());
 
-    decoded.save("output.jpg")?;
+    decoded.save("output_image.jpg")?;
 
-    let mut output_file = File::open("output.jpg")?;
+    let mut output_file = File::open("output_image.jpg")?;
     let mut output_vec = Vec::new();
     output_file.read_to_end(&mut output_vec)?;
 
