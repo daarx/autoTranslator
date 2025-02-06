@@ -5,12 +5,13 @@ use aws_sdk_polly::operation::synthesize_speech::SynthesizeSpeechOutput;
 use aws_sdk_polly::types::{Engine, LanguageCode, OutputFormat, TextType, VoiceId};
 use aws_sdk_polly::Client as PollyClient;
 use aws_types::region::Region;
-use nokhwa::pixel_format::RgbFormat;
-use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
+use nokhwa::pixel_format::{LumaFormat, RgbFormat, YuyvFormat};
+use nokhwa::utils::{CameraIndex, ControlValueSetter, KnownCameraControl, RequestedFormat, RequestedFormatType, Resolution};
 use nokhwa::Camera;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::multipart;
 use std::io::{Read, Write};
+use std::process::exit;
 use std::vec;
 use soloud::{AudioExt, LoadExt, audio, Soloud};
 use tokio;
@@ -25,6 +26,20 @@ const USE_AWS_TEXT_TO_SPEECH: &str = "USE_AWS_TEXT_TO_SPEECH";
 async fn main() {
     dotenv::dotenv().ok(); // Load AWS and Azure credentials from file into environment variables
 
+    use text_io::read;
+
+    println!("Press enter to capture, q and enter to quit:");
+    let mut line: String = read!("{}\n");
+
+    while !line.contains("q") {
+        capture_process_playback().await;
+
+        println!("Press enter to capture, q and enter to quit:");
+        line = read!("{}\n");
+    }
+}
+
+async fn capture_process_playback() {
     match capture_image_from_webcam() {
         Ok(image_buffer) => match extract_text_from_image(image_buffer).await {
             Ok(extracted_text) => {
@@ -33,15 +48,8 @@ async fn main() {
 
                 match text_to_speech_result {
                     Ok(()) => {
-                        let soloud = Soloud::default().unwrap();
-                        let mut wav = audio::Wav::default();
-                        let mut file = File::open("output_audio.mp3").unwrap();
-                        let mut file_vector = Vec::new();
-                        file.read_to_end(&mut file_vector).unwrap();
-                        wav.load_mem(file_vector.as_slice()).unwrap();
-                        soloud.play(&wav);
-                        while soloud.voice_count() > 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        if let Err(e) = playback_sound() {
+                            eprintln!("Error when playing back sound: {}", e);
                         }
                     },
                     Err(e) => eprintln!("Failed to convert text: {}", e),
@@ -62,11 +70,35 @@ fn capture_image_from_webcam() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let index = CameraIndex::Index(0);
     // request the absolute highest resolution CameraFormat that can be decoded to RGB.
     let requested =
-        RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
+        RequestedFormat::new::<RgbFormat>(RequestedFormatType::HighestResolution(Resolution::new(1920, 1080)));
     // make the camera
     let mut camera = Camera::new(index, requested)?;
 
+    // camera.compatible_camera_formats()?.iter().for_each(|format| {
+    //     println!("Format: {:?}", format);
+    // });
+
+    // camera.camera_controls_known_camera_controls()?.iter().for_each(|control| {
+    //     println!("Control: {:?}", control);
+    //
+    //     if let KnownCameraControl::Other(10094861) = control.0 {
+    //         println!("Setting Zoom");
+    //         camera.set_camera_control(*control.0, ControlValueSetter::Integer(1)).expect("Could not set camera control");
+    //     }
+    //
+    //     if let KnownCameraControl::Brightness = control.0 {
+    //         println!("Setting Zoom");
+    //         camera.set_camera_control(*control.0, ControlValueSetter::Integer(10)).expect("Could not set camera control");
+    //     }
+    // });
+
+    camera.open_stream()?;
+
     // get a frame
+    camera.frame()?;
+    camera.frame()?;
+    camera.frame()?;
+    camera.frame()?;
     let frame = camera.frame()?;
     println!("Captured Single Frame of {}", frame.buffer().len());
     // decode into an ImageBuffer
@@ -78,6 +110,8 @@ fn capture_image_from_webcam() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut output_file = File::open("output_image.jpg")?;
     let mut output_vec = Vec::new();
     output_file.read_to_end(&mut output_vec)?;
+
+    // exit(0);
 
     Ok(output_vec)
 }
@@ -189,6 +223,21 @@ async fn convert_text_to_speech_with_aws(text: String) -> Result<(), Box<dyn std
     let mut file = File::create("output_audio.mp3")?;
 
     file.write_all(audio_stream.to_vec().as_slice())?;
+
+    Ok(())
+}
+
+fn playback_sound() -> Result<(), Box<dyn std::error::Error>> {
+    let soloud = Soloud::default()?;
+    let mut wav = audio::Wav::default();
+    let mut file = File::open("output_audio.mp3")?;
+    let mut file_vector = Vec::new();
+    file.read_to_end(&mut file_vector)?;
+    wav.load_mem(file_vector.as_slice())?;
+    soloud.play(&wav);
+    while soloud.voice_count() > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     Ok(())
 }
