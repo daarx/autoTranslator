@@ -5,8 +5,8 @@ use aws_sdk_polly::operation::synthesize_speech::SynthesizeSpeechOutput;
 use aws_sdk_polly::types::{Engine, LanguageCode, OutputFormat, TextType, VoiceId};
 use aws_sdk_polly::Client as PollyClient;
 use aws_types::region::Region;
-use nokhwa::pixel_format::{LumaFormat, RgbFormat, YuyvFormat};
-use nokhwa::utils::{CameraIndex, ControlValueSetter, KnownCameraControl, RequestedFormat, RequestedFormatType, Resolution};
+use nokhwa::pixel_format::{RgbFormat};
+use nokhwa::utils::{CameraFormat, CameraIndex, ControlValueSetter, FrameFormat, KnownCameraControl, RequestedFormat, RequestedFormatType, Resolution};
 use nokhwa::Camera;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::multipart;
@@ -69,28 +69,25 @@ fn capture_image_from_webcam() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // first camera in system
     let index = CameraIndex::Index(0);
     // request the absolute highest resolution CameraFormat that can be decoded to RGB.
-    let requested =
-        RequestedFormat::new::<RgbFormat>(RequestedFormatType::HighestResolution(Resolution::new(1920, 1080)));
+    // let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::HighestResolution(Resolution::new(1280, 720)));
+    // let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(CameraFormat::new(Resolution::new(1920, 1080), FrameFormat::NV12, 1)));
+    // let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(CameraFormat::new(Resolution::new(1280, 720), FrameFormat::NV12, 1)));
+    let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
     // make the camera
     let mut camera = Camera::new(index, requested)?;
 
-    // camera.compatible_camera_formats()?.iter().for_each(|format| {
-    //     println!("Format: {:?}", format);
-    // });
+    // camera.set_camera_control(KnownCameraControl::Gain, ControlValueSetter::Integer(0))?; // Might not be changeable
+    // camera.set_camera_control(KnownCameraControl::Exposure, ControlValueSetter::Integer(-6))?; // Might not be changeable
+    // camera.set_camera_control(KnownCameraControl::Focus, ControlValueSetter::Integer(68))?; // Might not be changeable
+    camera.set_camera_control(KnownCameraControl::Sharpness, ControlValueSetter::Integer(72))?; // (0-255, default: 72)
+    camera.set_camera_control(KnownCameraControl::Zoom, ControlValueSetter::Integer(1))?; // (1-5, default: 1)
+    camera.set_camera_control(KnownCameraControl::Brightness, ControlValueSetter::Integer(20))?; // (0-255, default: 128)
+    camera.set_camera_control(KnownCameraControl::Contrast, ControlValueSetter::Integer(200))?; // (0-255, default: 32)
+    camera.set_camera_control(KnownCameraControl::Saturation, ControlValueSetter::Integer(10))?; // (0-255, default: 32)
 
-    // camera.camera_controls_known_camera_controls()?.iter().for_each(|control| {
-    //     println!("Control: {:?}", control);
-    //
-    //     if let KnownCameraControl::Other(10094861) = control.0 {
-    //         println!("Setting Zoom");
-    //         camera.set_camera_control(*control.0, ControlValueSetter::Integer(1)).expect("Could not set camera control");
-    //     }
-    //
-    //     if let KnownCameraControl::Brightness = control.0 {
-    //         println!("Setting Zoom");
-    //         camera.set_camera_control(*control.0, ControlValueSetter::Integer(10)).expect("Could not set camera control");
-    //     }
-    // });
+    // camera.camera_controls_known_camera_controls()?.iter().for_each(|control| { println!("Known control: {:?}", control); });
+    // camera.camera_controls()?.iter().for_each(|control| { println!("Control: {:?}", control); });
+    // camera.compatible_camera_formats()?.iter().for_each(|format| { println!("Format: {:?}", format); });
 
     camera.open_stream()?;
 
