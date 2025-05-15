@@ -1,9 +1,11 @@
+use std::cmp::Ordering;
 use std::fmt::{Display};
 use std::fs::File;
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::multipart;
 use std::io::{Read, Write};
+use std::str::FromStr;
 use std::vec;
 use opencv::core::Rect;
 use soloud::{AudioExt, LoadExt, audio, Soloud};
@@ -50,13 +52,13 @@ struct CameraCapture {
 impl CameraCapture {
     fn new(width: i32, height: i32) -> Self {
         let mut camera_capture = CameraCapture {
-            cap: VideoCapture::new(0, opencv::videoio::CAP_DSHOW).unwrap(),
+            cap: VideoCapture::new(0, CameraCapture::get_backend()).unwrap(),
             height,
             width
         };
 
         if !camera_capture.cap.is_opened().unwrap() {
-            panic!("Camera didn't open properly!");
+            return camera_capture
         }
         
         camera_capture.cap.set(opencv::videoio::CAP_PROP_FRAME_WIDTH, width as f64).unwrap();
@@ -88,6 +90,14 @@ impl CameraCapture {
         let mut bytes_vector = Vec::new();
         file.read_to_end(&mut bytes_vector)?;
         Ok(bytes_vector)
+    }
+    
+    fn get_backend() -> i32 {
+        if cfg!(target_os = "windows") {
+            opencv::videoio::CAP_DSHOW
+        } else {
+            opencv::videoio::CAP_ANY
+        }
     }
 }
 
@@ -128,25 +138,100 @@ impl OcrClient {
         }
 
         let mut output = String::with_capacity(100);
+        let mut interpreted_lines = Vec::with_capacity(5);
         if let Some(regions) = response["regions"].as_array() {
             for region in regions {
                 for line in region["lines"].as_array().unwrap_or(&vec![]) {
+                    let mut interpreted_line = InterpretedLine::from_str(line["boundingBox"].as_str().unwrap()).unwrap();
                     let words: Vec<String> = line["words"]
                         .as_array()
                         .unwrap_or(&vec![])
                         .iter()
                         .map(|w| w["text"].as_str().unwrap_or("").trim().to_string())
                         .collect();
-                    output.push_str(&words.join(""));
+                    interpreted_line.text.push_str(&words.join(""));
+                    interpreted_lines.push(interpreted_line);
                 }
             }
         } else {
             println!("No text detected.");
         }
-
-        // output.push_str("今日は俺の名前はヘンリクだよ。よろしくお願いします。"); // Can be used for debug purposes.
-
+        
+        interpreted_lines.sort();
+        
+        let mut first_line_is_name = false;
+        if interpreted_lines.len() > 1 {
+            let first_line = interpreted_lines.first().unwrap();
+            let mut rest_of_the_lines = interpreted_lines.iter().skip(1);
+            
+            if rest_of_the_lines.all(|line| first_line.x - line.x > 60 ) {
+                first_line_is_name = true;
+            }
+        }
+        
+        if first_line_is_name {
+            let mut name = &interpreted_lines.first().unwrap().text;
+            
+            output.push_str(name.as_str());
+            output.push_str(": ");
+            interpreted_lines.iter().skip(1).map(|line| line.text.as_str()).for_each(|line| output.push_str(line));
+        } else {
+            interpreted_lines.iter().map(|line| line.text.as_str()).for_each(|line| output.push_str(&line));
+        }
+        
         Ok(output)
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct InterpretedLine {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    text: String
+}
+
+impl InterpretedLine {
+    fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
+        Self { x, y, width, height, text: String::with_capacity(50) }
+    }
+}
+
+impl FromStr for InterpretedLine {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut split_result = s.split(',');
+        
+        if let (Some(x), Some(y), Some(width), Some(height), None) = (split_result.next(), split_result.next(), split_result.next(), split_result.next(), split_result.next()) {
+            Ok(Self::new(x.parse::<i32>().map_err(|_| ())?, y.parse::<i32>().map_err(|_| ())?, width.parse::<i32>().map_err(|_| ())?, height.parse::<i32>().map_err(|_| ())?))
+        } else {
+            Err(())
+        }
+    }
+}
+
+impl Ord for InterpretedLine {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // order by descending increasing y, then increasing x
+        if self.y > other.y {
+            Ordering::Greater
+        } else if self.y < other.y {
+            Ordering::Less
+        } else if self.x > other.x {
+            Ordering::Greater
+        } else if self.x < other.x {
+            Ordering::Less
+        } else {
+            Ordering::Equal
+        }
+    }
+}
+
+impl PartialOrd for InterpretedLine {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -225,7 +310,7 @@ impl TranslatorClient {
             headers
         }
     }
-    async fn make_request(&self, text: &String, output_languages: &[TextToSpeechLanguage]) -> Result<(TranslationResponse), Box<dyn std::error::Error>> {
+    async fn make_request(&self, text: &String, output_languages: &[TextToSpeechLanguage]) -> Result<TranslationResponse, Box<dyn std::error::Error>> {
         if output_languages.is_empty() {
             return Ok(TranslationResponse { en_translation: String::new(), fi_translation: String::new() });
         }
@@ -243,7 +328,7 @@ impl TranslatorClient {
             .json::<serde_json::Value>()
             .await?;
 
-        let mut translationResponse = TranslationResponse {
+        let mut translation_response = TranslationResponse {
             en_translation: String::new(),
             fi_translation: String::new(),
         };
@@ -252,9 +337,9 @@ impl TranslatorClient {
             Some(translations) => {
                 translations.iter().for_each(|translation| {
                     if translation["to"].as_str().unwrap_or("en") == "fi" {
-                        translationResponse.fi_translation = translation["text"].to_string();
+                        translation_response.fi_translation = translation["text"].to_string();
                     } else if translation["to"].as_str().unwrap_or("en") == "en" {
-                        translationResponse.en_translation = translation["text"].to_string();
+                        translation_response.en_translation = translation["text"].to_string();
                     }
                 });
             },
@@ -263,7 +348,7 @@ impl TranslatorClient {
             }
         }
 
-        Ok(translationResponse)
+        Ok(translation_response)
     }
 }
 
@@ -382,13 +467,7 @@ fn azure_ocr_url() -> String { dotenv::var("AZURE_OCR_URL").expect("Couldn't fin
 fn azure_text_to_speech_url() -> String { dotenv::var("AZURE_TEXT_TO_SPEECH_URL").expect("Couldn't find environment variable AZURE_TEXT_TO_SPEECH_URL") }
 fn azure_ocr_key() -> String { dotenv::var("AZURE_OCR_KEY").expect("Couldn't find environment variable AZURE_OCR_KEY") }
 fn azure_text_to_speech_key() -> String { dotenv::var("AZURE_TEXT_TO_SPEECH_KEY").expect("Couldn't find environment variable AZURE_TEXT_TO_SPEECH_KEY") }
-fn use_aws_text_to_speech() -> String { dotenv::var("USE_AWS_TEXT_TO_SPEECH").expect("Couldn't find environment variable USE_AWS_TEXT_TO_SPEECH") }
 fn azure_translator_url() -> String { dotenv::var("AZURE_TRANSLATOR_URL").expect("Couldn't find environment variable AZURE_TRANSLATOR_URL") }
 fn azure_translator_key() -> String { dotenv::var("AZURE_TRANSLATOR_KEY").expect("Couldn't find environment variable AZURE_TRANSLATOR_KEY") }
 fn azure_region() -> String { dotenv::var("AZURE_REGION").expect("Couldn't find environment variable AZURE_REGION") }
-fn camera_sharpness() -> String { dotenv::var("CAMERA_SHARPNESS").expect("Couldn't find environment variable CAMERA_SHARPNESS") }
-fn camera_zoom() -> String { dotenv::var("CAMERA_ZOOM").expect("Couldn't find environment variable CAMERA_ZOOM") }
-fn camera_brightness() -> String { dotenv::var("CAMERA_BRIGHTNESS").expect("Couldn't find environment variable CAMERA_BRIGHTNESS") }
-fn camera_contrast() -> String { dotenv::var("CAMERA_CONTRAST").expect("Couldn't find environment variable CAMERA_CONTRAST") }
-fn camera_saturation() -> String { dotenv::var("CAMERA_SATURATION").expect("Couldn't find environment variable CAMERA_SATURATION") }
 fn use_test_file() -> String { dotenv::var("USE_TEST_FILE").expect("Couldn't find environment variable USE_TEST_FILE") }
