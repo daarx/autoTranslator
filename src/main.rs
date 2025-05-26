@@ -7,7 +7,7 @@ use reqwest::multipart;
 use std::io::{Read, Write};
 use std::str::FromStr;
 use std::vec;
-use opencv::core::Rect;
+use opencv::core::{Rect};
 use soloud::{AudioExt, LoadExt, audio, Soloud};
 use tokio;
 use crate::TextToSpeechLanguage::{English, Finnish, Japanese};
@@ -40,7 +40,8 @@ struct UsageOptions {
     playback_fi: bool,
     use_translation: bool,
     half_screen: bool,
-    debug_printing: bool
+    debug_printing: bool,
+    color_correction: bool,
 }
 
 struct CameraCapture {
@@ -70,7 +71,7 @@ impl CameraCapture {
         camera_capture
     }
 
-    fn capture_image(&mut self, half_screen: bool) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    fn capture_image(&mut self, half_screen: bool, color_correction: bool) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut mat = Mat::default();
 
         if !self.cap.read(&mut mat).unwrap() {
@@ -78,18 +79,96 @@ impl CameraCapture {
         }
 
         if half_screen {
-            let crop_rect = Rect::new(0, self.height / 2, self.width, self.height / 2);
-            let cropped_mat = mat.roi(crop_rect).unwrap();
-
-            opencv::imgcodecs::imwrite_def("output_image.jpg", &cropped_mat).unwrap();
-        } else {
-            opencv::imgcodecs::imwrite_def("output_image.jpg", &mat).unwrap();
+            mat = self.get_cropped_image(mat)?;
         }
-        
+
+        if color_correction {
+            mat = self.get_color_corrected_image(mat)?;
+        }
+
+        opencv::imgcodecs::imwrite_def("output_image.jpg", &mat).unwrap();
+
         let mut file = File::open("output_image.jpg")?;
         let mut bytes_vector = Vec::new();
         file.read_to_end(&mut bytes_vector)?;
         Ok(bytes_vector)
+    }
+
+    fn load_image_from_file(&mut self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let image_mat = opencv::imgcodecs::imread_def("test_image.jpg")?;
+        let image_mat = self.get_color_corrected_image(image_mat)?;
+
+        opencv::imgcodecs::imwrite_def("output_image.jpg", &image_mat).unwrap();
+
+        let mut file = File::open("output_image.jpg")?;
+        let mut bytes_vector = Vec::new();
+        file.read_to_end(&mut bytes_vector)?;
+        Ok(bytes_vector)
+    }
+
+    fn get_cropped_image(&mut self, mat: Mat) -> Result<Mat, Box<dyn std::error::Error>> {
+        let crop_rect = Rect::new(0, self.height / 2, self.width, self.height / 2);
+        let cropped_mat = mat.roi(crop_rect)?;
+        Ok(cropped_mat.clone_pointee())
+    }
+
+    fn isolate_white_text(&mut self, gray: Mat) -> Result<Mat, Box<dyn std::error::Error>> {
+        // let mut blurred = Mat::default();
+        // opencv::imgproc::gaussian_blur(&gray, &mut blurred, opencv::core::Size::new(5, 5), 0.0, 0.0, opencv::core::BorderTypes::BORDER_CONSTANT as i32, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        // 
+        // // Apply threshold: pixels brighter than 200 become 255 (white), others become 0 (black)
+        // let mut thresh = Mat::default();
+        // opencv::imgproc::threshold(&blurred, &mut thresh, 200.0, 255.0, opencv::imgproc::THRESH_BINARY)?;
+        // 
+        // // Optional: clean up noise with morphology
+        // let mut morph = Mat::default();
+        // let kernel = opencv::imgproc::get_structuring_element(
+        //     opencv::imgproc::MORPH_RECT,
+        //     opencv::core::Size::new(3, 3),
+        //     opencv::core::Point::new(-1, -1),
+        // )?;
+        // opencv::imgproc::morphology_ex(&thresh, &mut morph, opencv::imgproc::MORPH_OPEN, &kernel, opencv::core::Point::new(-1, -1), 1, opencv::core::BORDER_CONSTANT, opencv::core::Scalar::default())?;
+        
+        // let result = self.blur(gray, 5, 5, 0.0, 0.0)?;
+        let result = self.threshold(gray, threshold())?;
+        // let result = self.morph(result, 3, 3)?;
+
+        Ok(result)
+    }
+    
+    fn blur(&mut self, source: Mat, k_width: i32, k_height: i32, sigma_x: f64, sigma_y: f64) -> Result<Mat, Box<dyn std::error::Error>> {
+        let mut blurred = Mat::default();
+        opencv::imgproc::gaussian_blur(&source, &mut blurred, opencv::core::Size::new(k_width, k_height), sigma_x, sigma_y, opencv::core::BorderTypes::BORDER_CONSTANT as i32, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        Ok(blurred)
+    }
+    
+    fn threshold(&mut self, source: Mat, threshold: f64) -> Result<Mat, Box<dyn std::error::Error>> {
+        // Apply threshold: pixels brighter than 200 become 255 (white), others become 0 (black)
+        let mut thresh = Mat::default();
+        opencv::imgproc::threshold(&source, &mut thresh, threshold, 255.0, opencv::imgproc::THRESH_BINARY)?;
+        Ok(thresh)
+    }
+    
+    fn morph(&mut self, source: Mat, width: i32, height: i32) -> Result<Mat, Box<dyn std::error::Error>> {
+        // Optional: clean up noise with morphology
+        let mut morph = Mat::default();
+        let kernel = opencv::imgproc::get_structuring_element(
+            opencv::imgproc::MORPH_RECT,
+            opencv::core::Size::new(width, height),
+            opencv::core::Point::new(-1, -1),
+        )?;
+        opencv::imgproc::morphology_ex(&source, &mut morph, opencv::imgproc::MORPH_OPEN, &kernel, opencv::core::Point::new(-1, -1), 1, opencv::core::BORDER_CONSTANT, opencv::core::Scalar::default())?;
+        Ok(morph)
+    }
+
+    fn get_color_corrected_image(&mut self, mat: Mat) -> Result<Mat, Box<dyn std::error::Error>> {
+        let mut grayscale_image = Mat::zeros_size(mat.size()?, mat.typ())?.to_mat()?;
+
+        opencv::imgproc::cvt_color(&mat, &mut grayscale_image, opencv::imgproc::COLOR_BGR2GRAY, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        
+        let converted_image = self.isolate_white_text(grayscale_image)?;
+
+        Ok(converted_image)
     }
     
     fn get_backend() -> i32 {
@@ -170,7 +249,7 @@ impl OcrClient {
         }
         
         if first_line_is_name {
-            let mut name = &interpreted_lines.first().unwrap().text;
+            let name = &interpreted_lines.first().unwrap().text;
             
             output.push_str(name.as_str());
             output.push_str(": ");
@@ -390,10 +469,10 @@ async fn main() {
 
     use text_io::read;
 
-    println!("Press enter to capture, q-enter to quit, [fethd]-enter to toggle mode:");
+    println!("Press enter to capture, q-enter to quit, [fethdc]-enter to toggle mode:");
     let mut line: String = read!("{}\n");
 
-    let mut usage_options = UsageOptions { playback_en: false, playback_fi: false, use_translation: false, half_screen: false, debug_printing: false };
+    let mut usage_options = UsageOptions { playback_en: false, playback_fi: false, use_translation: false, half_screen: false, debug_printing: false, color_correction: false };
 
     while !line.contains("q") {
         if line.contains("f") { usage_options.playback_fi = !usage_options.playback_fi };
@@ -401,13 +480,14 @@ async fn main() {
         if line.contains("t") { usage_options.use_translation = !usage_options.use_translation };
         if line.contains("h") { usage_options.half_screen = !usage_options.half_screen };
         if line.contains("d") { usage_options.debug_printing = !usage_options.debug_printing };
+        if line.contains("c") { usage_options.color_correction = !usage_options.color_correction };
 
         match capture_process_playback(&mut camera, &ocr_client, &text_to_speech_client, &translator_client, &audio_player, &usage_options).await {
             Ok(_) => (),
             Err(e) => eprintln!("{}", e),
         }
 
-        println!("Press enter to capture, q-enter to quit, [fet]-enter to toggle mode:");
+        println!("Press enter to capture, q-enter to quit, [fethdc]-enter to toggle mode:");
         line = read!("{}\n");
     }
 }
@@ -416,7 +496,7 @@ async fn capture_process_playback(camera: &mut CameraCapture, ocr_client: &OcrCl
     let image_buffer = if use_test_file().parse()? {
         load_image_from_disk()?
     } else {
-        camera.capture_image(usage_options.half_screen)?
+        camera.capture_image(usage_options.half_screen, usage_options.color_correction)?
     };
     
     let extracted_text = ocr_client.make_request(image_buffer, &usage_options).await?;
@@ -471,3 +551,4 @@ fn azure_translator_url() -> String { dotenv::var("AZURE_TRANSLATOR_URL").expect
 fn azure_translator_key() -> String { dotenv::var("AZURE_TRANSLATOR_KEY").expect("Couldn't find environment variable AZURE_TRANSLATOR_KEY") }
 fn azure_region() -> String { dotenv::var("AZURE_REGION").expect("Couldn't find environment variable AZURE_REGION") }
 fn use_test_file() -> String { dotenv::var("USE_TEST_FILE").expect("Couldn't find environment variable USE_TEST_FILE") }
+fn threshold() -> f64 { dotenv::var("THRESHOLD").expect("Couldn't find THRESHOLD").parse().unwrap() }
