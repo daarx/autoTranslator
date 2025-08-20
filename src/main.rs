@@ -247,12 +247,12 @@ impl CameraCapture {
     }
 }
 
-struct OcrClient {
+struct AzureOcrClient {
     client: reqwest::Client,
     headers: HeaderMap,
 }
 
-impl OcrClient {
+impl AzureOcrClient {
     fn new() -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -350,16 +350,6 @@ struct GoogleOcrClient {
 
 impl GoogleOcrClient {
     fn new() -> Self {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-goog-user-project",
-            HeaderValue::from_str(google_project().as_str()).unwrap(),
-        );
-        headers.insert(
-            "Content-Type",
-            HeaderValue::from_str("application/json; charset=utf-8").unwrap(),
-        );
-
         let token = if cfg!(target_os = "windows") {
             String::from_utf8(std::process::Command::new("cmd")
                 .args(["/C", "gcloud", "auth", "print-access-token"])
@@ -373,6 +363,34 @@ impl GoogleOcrClient {
                 .unwrap()
                 .stdout).unwrap()
         };
+
+        let gcloud_config = if cfg!(target_os = "windows") {
+            String::from_utf8(std::process::Command::new("cmd")
+                .args(["/C", "gcloud", "config", "list"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        } else {
+            String::from_utf8(std::process::Command::new("sh")
+                .args(["-c", "gcloud", "config", "list", "--format='value(core.project)'"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        };
+
+        let project = extract_google_project(gcloud_config.as_str()).unwrap().trim();
+
+        println!("Project: {}", project);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-goog-user-project",
+            HeaderValue::from_str(project).unwrap(),
+        );
+        headers.insert(
+            "Content-Type",
+            HeaderValue::from_str("application/json; charset=utf-8").unwrap(),
+        );
 
         println!("Google OCR token: {}", token.as_str());
 
@@ -421,6 +439,10 @@ impl GoogleOcrClient {
 
         Ok(extracted_text)
     }
+}
+
+fn extract_google_project(config: &str) -> Option<&str> {
+    config.find("project = ").map(|project_start| config.split_at(project_start + 10).1)
 }
 
 #[derive(PartialEq, Eq)]
@@ -492,12 +514,12 @@ impl PartialOrd for InterpretedLine {
     }
 }
 
-struct TextToSpeechClient {
+struct AzureTextToSpeechClient {
     client: reqwest::Client,
     headers: HeaderMap,
 }
 
-impl TextToSpeechClient {
+impl AzureTextToSpeechClient {
     fn new() -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -547,6 +569,111 @@ impl TextToSpeechClient {
         let _ = file
             .write_all(response_bytes.as_slice())
             .expect("Failed to write to file");
+
+        Ok(())
+    }
+}
+
+struct GoogleTextToSpeechClient {
+    client: reqwest::Client,
+    headers: HeaderMap,
+    token: String,
+}
+
+impl GoogleTextToSpeechClient {
+    fn new() -> Self {
+        let token = if cfg!(target_os = "windows") {
+            String::from_utf8(std::process::Command::new("cmd")
+                .args(["/C", "gcloud", "auth", "print-access-token"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        } else {
+            String::from_utf8(std::process::Command::new("sh")
+                .args(["-c", "gcloud", "auth", "print-access-token"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        };
+
+        let gcloud_config = if cfg!(target_os = "windows") {
+            String::from_utf8(std::process::Command::new("cmd")
+                .args(["/C", "gcloud", "config", "list"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        } else {
+            String::from_utf8(std::process::Command::new("sh")
+                .args(["-c", "gcloud", "config", "list", "--format='value(core.project)'"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        };
+
+        let project = extract_google_project(gcloud_config.as_str()).unwrap().trim();
+
+        println!("Project: {}", project);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-goog-user-project",
+            HeaderValue::from_str(project).unwrap(),
+        );
+        headers.insert(
+            "Content-Type",
+            HeaderValue::from_str("application/json").unwrap(),
+        );
+
+        println!("Google OCR token: {}", token.as_str());
+
+        Self {
+            client: reqwest::Client::new(),
+            headers,
+            token,
+        }
+    }
+
+    async fn make_request(
+        &self,
+        text: &String,
+        language: TextToSpeechLanguage,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let request = json!({
+            "input": {
+                "markup": text
+            },
+            "voice": {
+                "languageCode": "ja-JP",
+                "name": "ja-JP-Chirp3-HD-Achernar",
+                "voiceClone": {}
+            },
+            "audioConfig": {
+                "audioEncoding": "MP3"
+            }
+        });
+
+        let json_response = self
+            .client
+            .post("https://texttospeech.googleapis.com/v1/text:synthesize")
+            .headers(self.headers.clone())
+            .bearer_auth(self.token.trim())
+            .json(&request)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        // println!("GoogleTextToSpeechClient {:#?}", json_response);
+
+        if let Some(audio_content) = json_response["audioContent"].as_str() {
+            let decoded_audio = BASE64_STANDARD.decode(audio_content.as_bytes())?;
+
+            // Save the audio to a file
+            let mut file = File::create("output_audio.mp3").expect("Failed to create audio file");
+            let _ = file
+                .write_all(decoded_audio.as_slice())
+                .expect("Failed to write to file");
+        }
 
         Ok(())
     }
@@ -668,9 +795,10 @@ async fn main() {
     dotenv::dotenv().ok(); // Load settings from .env file into environment variables
 
     let mut camera = CameraCapture::new(3840, 2160);
-    let ocr_client = OcrClient::new();
+    let azure_ocr_client = AzureOcrClient::new();
     let google_ocr_client = GoogleOcrClient::new();
-    let text_to_speech_client = TextToSpeechClient::new();
+    let azure_text_to_speech_client = AzureTextToSpeechClient::new();
+    let google_text_to_speech_client = GoogleTextToSpeechClient::new();
     let translator_client = TranslatorClient::new();
     let audio_player = AudioPlayer::new();
 
@@ -710,9 +838,10 @@ async fn main() {
 
         match capture_process_playback(
             &mut camera,
-            &ocr_client,
+            &azure_ocr_client,
             &google_ocr_client,
-            &text_to_speech_client,
+            &azure_text_to_speech_client,
+            &google_text_to_speech_client,
             &translator_client,
             &audio_player,
             &usage_options,
@@ -730,9 +859,10 @@ async fn main() {
 
 async fn capture_process_playback(
     camera: &mut CameraCapture,
-    ocr_client: &OcrClient,
+    azure_ocr_client: &AzureOcrClient,
     google_ocr_client: &GoogleOcrClient,
-    text_to_speech_client: &TextToSpeechClient,
+    azure_text_to_speech_client: &AzureTextToSpeechClient,
+    google_text_to_speech_client: &GoogleTextToSpeechClient,
     translator_client: &TranslatorClient,
     audio_player: &AudioPlayer,
     usage_options: &UsageOptions,
@@ -766,9 +896,10 @@ async fn capture_process_playback(
     let translated_text_future =
         translator_client.make_request(&extracted_text, languages.as_slice());
 
-    text_to_speech_client
+    google_text_to_speech_client
         .make_request(&extracted_text, Japanese)
         .await?;
+
     audio_player.play_audio("output_audio.mp3").await?;
 
     let translated_text = translated_text_future.await?;
@@ -778,7 +909,7 @@ async fn capture_process_playback(
     }
 
     if !translated_text.en_translation.is_empty() && usage_options.playback_en {
-        text_to_speech_client
+        azure_text_to_speech_client
             .make_request(&translated_text.en_translation, English)
             .await?;
         audio_player.play_audio("output_audio.mp3").await?;
@@ -789,7 +920,7 @@ async fn capture_process_playback(
     }
 
     if !translated_text.fi_translation.is_empty() && usage_options.playback_fi {
-        text_to_speech_client
+        azure_text_to_speech_client
             .make_request(&translated_text.fi_translation, Finnish)
             .await?;
         audio_player.play_audio("output_audio.mp3").await?;
@@ -841,13 +972,6 @@ fn use_test_file() -> String {
 fn threshold() -> f64 {
     dotenv::var("THRESHOLD")
         .expect("Couldn't find THRESHOLD")
-        .parse()
-        .unwrap()
-}
-
-fn google_project() -> String {
-    dotenv::var("GOOGLE_PROJECT")
-        .expect("Couldn't find GOOGLE_PROJECT")
         .parse()
         .unwrap()
 }
