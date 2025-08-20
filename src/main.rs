@@ -679,12 +679,12 @@ impl GoogleTextToSpeechClient {
     }
 }
 
-struct TranslatorClient {
+struct AzureTranslatorClient {
     client: reqwest::Client,
     headers: HeaderMap,
 }
 
-impl TranslatorClient {
+impl AzureTranslatorClient {
     fn new() -> Self {
         let azure_translator_key = azure_translator_key();
         let azure_region = azure_region();
@@ -764,6 +764,108 @@ impl TranslatorClient {
     }
 }
 
+struct GoogleTranslatorClient {
+    client: reqwest::Client,
+    headers: HeaderMap,
+    token: String,
+}
+
+impl GoogleTranslatorClient {
+    fn new() -> Self {
+        let token = if cfg!(target_os = "windows") {
+            String::from_utf8(std::process::Command::new("cmd")
+                .args(["/C", "gcloud", "auth", "print-access-token"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        } else {
+            String::from_utf8(std::process::Command::new("sh")
+                .args(["-c", "gcloud", "auth", "print-access-token"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        };
+
+        let gcloud_config = if cfg!(target_os = "windows") {
+            String::from_utf8(std::process::Command::new("cmd")
+                .args(["/C", "gcloud", "config", "list"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        } else {
+            String::from_utf8(std::process::Command::new("sh")
+                .args(["-c", "gcloud", "config", "list", "--format='value(core.project)'"])
+                .output()
+                .unwrap()
+                .stdout).unwrap()
+        };
+
+        let project = extract_google_project(gcloud_config.as_str()).unwrap().trim();
+
+        println!("Project: {}", project);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-goog-user-project",
+            HeaderValue::from_str(project).unwrap(),
+        );
+        headers.insert(
+            "Content-Type",
+            HeaderValue::from_str("application/json").unwrap(),
+        );
+
+        println!("Google Translator token: {}", token.as_str());
+
+        Self {
+            client: reqwest::Client::new(),
+            headers,
+            token,
+        }
+    }
+
+    async fn make_request(
+        &self,
+        text: &String,
+        output_languages: &[TextToSpeechLanguage],
+    ) -> Result<TranslationResponse, Box<dyn std::error::Error>> {
+        let request = json!({
+            "q": text,
+            "source": "ja",
+            "target": "en",
+            "format": "text"
+        });
+
+        let json_response = self
+            .client
+            .post("https://translation.googleapis.com/language/translate/v2")
+            .headers(self.headers.clone())
+            .bearer_auth(self.token.trim())
+            .json(&request)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        // println!("GoogleTextToSpeechClient {:#?}", json_response);
+
+        let mut cum_translation = String::with_capacity(100);
+        if let Some(translations) = json_response["data"]["translations"].as_array() {
+            translations.iter().for_each(|translation| {
+                if let Some(translated_text) = translation["translatedText"].as_str() {
+                    cum_translation.push_str(translated_text);
+                    cum_translation.push('\n');
+                }
+            });
+        }
+
+        Ok(TranslationResponse {
+            en_translation: cum_translation,
+            fi_translation: "".to_string(),
+            sv_translation: "".to_string(),
+        })
+    }
+}
+
 struct AudioPlayer {
     player: Soloud,
 }
@@ -799,7 +901,8 @@ async fn main() {
     let google_ocr_client = GoogleOcrClient::new();
     let azure_text_to_speech_client = AzureTextToSpeechClient::new();
     let google_text_to_speech_client = GoogleTextToSpeechClient::new();
-    let translator_client = TranslatorClient::new();
+    let azure_translator_client = AzureTranslatorClient::new();
+    let google_translator_client = GoogleTranslatorClient::new();
     let audio_player = AudioPlayer::new();
 
     use text_io::read;
@@ -842,7 +945,8 @@ async fn main() {
             &google_ocr_client,
             &azure_text_to_speech_client,
             &google_text_to_speech_client,
-            &translator_client,
+            &azure_translator_client,
+            &google_translator_client,
             &audio_player,
             &usage_options,
         )
@@ -863,7 +967,8 @@ async fn capture_process_playback(
     google_ocr_client: &GoogleOcrClient,
     azure_text_to_speech_client: &AzureTextToSpeechClient,
     google_text_to_speech_client: &GoogleTextToSpeechClient,
-    translator_client: &TranslatorClient,
+    azure_translator_client: &AzureTranslatorClient,
+    google_translator_client: &GoogleTranslatorClient,
     audio_player: &AudioPlayer,
     usage_options: &UsageOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -876,10 +981,6 @@ async fn capture_process_playback(
     let extracted_text = google_ocr_client
         .make_request(image_buffer, &usage_options)
         .await?;
-
-    // let extracted_text = ocr_client
-    //     .make_request(image_buffer, &usage_options)
-    //     .await?;
 
     println!("Extracted text JP: {}", &extracted_text);
 
@@ -894,7 +995,7 @@ async fn capture_process_playback(
     };
 
     let translated_text_future =
-        translator_client.make_request(&extracted_text, languages.as_slice());
+        google_translator_client.make_request(&extracted_text, languages.as_slice());
 
     google_text_to_speech_client
         .make_request(&extracted_text, Japanese)
