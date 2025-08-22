@@ -4,7 +4,8 @@ pub mod utils {
     use std::str::FromStr;
     use TextToSpeechLanguage::{Japanese, English, Finnish, Swedish};
 
-    pub enum TextToSpeechLanguage {
+    #[derive(PartialEq)]
+pub enum TextToSpeechLanguage {
         Japanese,
         English,
         Finnish,
@@ -32,6 +33,9 @@ pub mod utils {
         pub playback_en: bool,
         pub playback_fi: bool,
         pub use_translation: bool,
+        pub translate_en: bool,
+        pub translate_fi: bool,
+        pub translate_sv: bool,
         pub half_screen: bool,
         pub debug_printing: bool,
         pub color_correction: bool,

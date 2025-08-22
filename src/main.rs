@@ -17,6 +17,8 @@ use crate::utils::utils::UsageOptions;
 use std::io::{Read};
 use tokio;
 
+const QUERY_MESSAGE: &str = "Press enter to capture, q-enter to quit, [fethdcEFS]-enter to toggle mode:";
+
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().ok(); // Load settings from .env file into environment variables
@@ -30,14 +32,17 @@ async fn main() {
 
     use text_io::read;
 
-    println!("Press enter to capture, q-enter to quit, [fethdc]-enter to toggle mode:");
+    println!("{}", QUERY_MESSAGE);
     let mut line: String = read!("{}\n");
 
     let mut usage_options = UsageOptions {
         playback_en: false,
         playback_fi: false,
         use_translation: true,
-        half_screen: false,
+        translate_en: false,
+        translate_fi: false,
+        translate_sv: true,
+        half_screen: true,
         debug_printing: false,
         color_correction: false,
     };
@@ -62,6 +67,24 @@ async fn main() {
             usage_options.color_correction = !usage_options.color_correction
         };
 
+        if line.contains("E") {
+            usage_options.translate_en = true;
+            usage_options.translate_fi = false;
+            usage_options.translate_sv = false;
+        }
+
+        if line.contains("F") {
+            usage_options.translate_en = false;
+            usage_options.translate_fi = true;
+            usage_options.translate_sv = false;
+        }
+
+        if line.contains("S") {
+            usage_options.translate_en = false;
+            usage_options.translate_fi = false;
+            usage_options.translate_sv = true;
+        }
+
         match capture_process_playback(
             &mut camera,
             &azure_ocr_client,
@@ -71,13 +94,12 @@ async fn main() {
             &audio_player,
             &usage_options,
         )
-        .await
-        {
+        .await {
             Ok(_) => (),
             Err(e) => eprintln!("{}", e),
         }
 
-        println!("Press enter to capture, q-enter to quit, [fethdc]-enter to toggle mode:");
+        println!("{}", QUERY_MESSAGE);
         line = read!("{}\n");
     }
 }
@@ -108,9 +130,17 @@ async fn capture_process_playback(
         languages.clear();
     };
     if usage_options.use_translation {
-        languages.push(English);
-        languages.push(Finnish);
-        languages.push(Swedish);
+        if usage_options.translate_en {
+            languages.push(English);
+        }
+
+        if usage_options.translate_fi {
+            languages.push(Finnish);
+        }
+
+        if usage_options.translate_sv {
+            languages.push(Swedish);
+        }
     };
 
     let translated_text_future =

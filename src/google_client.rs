@@ -8,6 +8,7 @@ pub mod google_client {
     use std::io::Write;
     use std::process::Command;
     use crate::utils::utils::{TextToSpeechLanguage, TranslationResponse};
+    use crate::utils::utils::TextToSpeechLanguage::{English, Finnish};
 
     pub struct GoogleCloudClient {
         client: Client,
@@ -28,8 +29,8 @@ pub mod google_client {
                 .unwrap()
             } else {
                 String::from_utf8(
-                    Command::new("sh")
-                        .args(["-c", "gcloud", "auth", "print-access-token"])
+                    Command::new("zsh")
+                        .args(["-c", "gcloud auth print-access-token"])
                         .output()
                         .unwrap()
                         .stdout,
@@ -48,8 +49,8 @@ pub mod google_client {
                 .unwrap()
             } else {
                 String::from_utf8(
-                    Command::new("sh")
-                        .args(["-c", "gcloud", "config", "list"])
+                    Command::new("zsh")
+                        .args(["-c", "gcloud config list"])
                         .output()
                         .unwrap()
                         .stdout,
@@ -164,10 +165,18 @@ pub mod google_client {
             text: &String,
             output_languages: &[TextToSpeechLanguage],
         ) -> Result<TranslationResponse, Box<dyn std::error::Error>> {
+            let language_code = if output_languages.contains(&English) {
+                "en"
+            } else if output_languages.contains(&Finnish) {
+                "fi"
+            } else {
+                "sv"
+            };
+
             let request = json!({
                 "q": text,
                 "source": "ja",
-                "target": "en",
+                "target": language_code,
                 "format": "text"
             });
 
